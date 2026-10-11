@@ -1,0 +1,14 @@
+# Secretos
+.env
+
+# Datos personales generados
+salida/
+*.sqlite
+*.sqlite-*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
