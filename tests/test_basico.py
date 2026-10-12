@@ -96,23 +96,57 @@ def test_free_dictionary():
     assert diccionario.free_dictionary(s, "ubiquitous").texto == "(adjective) Found everywhere."
 
 
-def test_notion_sincronizar(tmp_path):
-    from kobo_words.config import Config
+class ClienteNotionFalso:
+    """Simula dos bases: la inglesa con columnas en inglés, la española en español."""
+
+    ESQUEMAS = {
+        "ds_en": {"Word": "title", "Definition": "rich_text", "Book": "rich_text"},
+        "ds_es": {"Palabra": "title", "Definición": "rich_text", "Libro": "select",
+                  "Fecha": "date"},
+    }
+
+    def __init__(self):
+        self.creadas: list[tuple[str, dict]] = []
+
+    def data_source_de(self, database_id): return "ds_" + database_id[-2:]
+    def esquema(self, ds): return self.ESQUEMAS[ds]
+    def titulos_existentes(self, *_): return {"ya_esta"}
+
+    def crear_pagina(self, ds, props):
+        self.creadas.append((ds, props))
+        return f"page{len(self.creadas)}"
+
+
+def test_notion_una_base_por_idioma(tmp_path, monkeypatch):
+    from kobo_words.config import Config, bases_notion_desde_entorno
     from kobo_words.notion import sincronizar
 
-    class ClienteFalso:
-        creadas = []
-        def data_source_de(self, _): return "ds1"
-        def esquema(self, _): return {"Palabra": "title", "Definición": "rich_text",
-                                      "Idioma": "select", "Libro": "rich_text", "Fecha": "date"}
-        def titulos_existentes(self, *_): return {"ya_esta"}
-        def crear_pagina(self, ds, props):
-            self.creadas.append(props); return f"page{len(self.creadas)}"
+    for var, valor in {
+        "NOTION_DATABASE_ID_EN": "base_en", "NOTION_DATABASE_ID_ES": "base_es",
+        "NOTION_PROP_DEFINICION": "Definición", "NOTION_PROP_LIBRO": "Libro",
+        "NOTION_PROP_FECHA": "Fecha",
+        # La base inglesa tiene las columnas en inglés y no tiene fecha:
+        "NOTION_PROP_DEFINICION_EN": "Definition", "NOTION_PROP_LIBRO_EN": "Book",
+        "NOTION_PROP_FECHA_EN": "-",
+    }.items():
+        monkeypatch.setenv(var, valor)
+    monkeypatch.delenv("NOTION_DATABASE_ID", raising=False)
+    cfg = Config(None, tmp_path, "token", bases_notion_desde_entorno())
 
-    cfg = Config(None, tmp_path, "t", "db", "Palabra", "Definición", "Idioma", "Libro", "Fecha")
-    entradas = [Entrada("ubiquitous", "en", "Found everywhere.", libro="Dune", fecha="2026-10-01"),
-                Entrada("ya_esta", "en", "x"), Entrada("sin_def", "en")]
-    c = ClienteFalso()
-    assert sincronizar(c, "db", entradas, cfg) == (1, 2)
-    assert c.creadas[0]["Idioma"] == {"select": {"name": "Inglés"}}
-    assert entradas[0].notion_page_id == "page1"
+    entradas = [
+        Entrada("ubiquitous", "en", "Found everywhere.", libro="Dune", fecha="2026-10-01"),
+        Entrada("desasosiego", "es", "Falta de sosiego.", libro="Niebla", fecha="2026-10-03"),
+        Entrada("ya_esta", "en", "x"),
+        Entrada("sin_def", "es"),
+        Entrada("bonjour", "fr", "Salut."),  # no hay base para francés
+    ]
+    c = ClienteNotionFalso()
+    assert sincronizar(c, entradas, cfg) == (2, 3)
+    assert c.creadas[0] == ("ds_en", {
+        "Word": {"title": [{"text": {"content": "ubiquitous"}}]},
+        "Definition": {"rich_text": [{"text": {"content": "Found everywhere."}}]},
+        "Book": {"rich_text": [{"text": {"content": "Dune"}}]},
+    })
+    ds, props = c.creadas[1]
+    assert ds == "ds_es" and props["Libro"] == {"select": {"name": "Niebla"}}
+    assert props["Fecha"] == {"date": {"start": "2026-10-03"}}

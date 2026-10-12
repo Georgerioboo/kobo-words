@@ -104,26 +104,29 @@ def _valor(tipo: str, texto: str) -> dict:
     raise ErrorNotion(f"Tipo de propiedad no soportado: {tipo}")
 
 
-def sincronizar(cliente: ClienteNotion, database_id: str, entradas: list[Entrada], cfg,
-                incluir_sin_definicion: bool = False) -> tuple[int, int]:
-    """Crea en Notion las entradas que aún no existen. Devuelve (creadas, omitidas)."""
-    ds_id = cliente.data_source_de(database_id)
+def _sincronizar_base(cliente: ClienteNotion, base, entradas: list[Entrada],
+                     incluir_sin_definicion: bool) -> tuple[int, int]:
+    """Sube un grupo de entradas a UNA base de datos. Devuelve (creadas, omitidas)."""
+    ds_id = cliente.data_source_de(base.database_id)
     esquema = cliente.esquema(ds_id)
 
+    # La columna de título es única en cada base: si no se configuró, se usa esa.
+    prop_palabra = base.prop_palabra or next(n for n, t in esquema.items() if t == "title")
+
     # Comprobamos que las columnas configuradas existen y tienen un tipo válido.
-    columnas = {
-        "palabra": (cfg.prop_palabra, {"title"}),
-        "definicion": (cfg.prop_definicion, {"rich_text"}),
-        "idioma": (cfg.prop_idioma, {"select", "multi_select", "rich_text"}),
-        "libro": (cfg.prop_libro, {"select", "multi_select", "rich_text"}),
-        "fecha": (cfg.prop_fecha, {"date"}),
-    }
-    for campo, (nombre, tipos) in columnas.items():
+    columnas = [
+        (prop_palabra, {"title"}),
+        (base.prop_definicion, {"rich_text"}),
+        (base.prop_idioma, {"select", "multi_select", "rich_text"}),
+        (base.prop_libro, {"select", "multi_select", "rich_text"}),
+        (base.prop_fecha, {"date"}),
+    ]
+    for nombre, tipos in columnas:
         if nombre is None:
             continue
         if nombre not in esquema:
             raise ErrorNotion(
-                f"La base de datos no tiene la columna '{nombre}'. "
+                f"La base de datos {base.database_id} no tiene la columna '{nombre}'. "
                 f"Columnas disponibles: {', '.join(esquema)}"
             )
         if esquema[nombre] not in tipos:
@@ -132,7 +135,7 @@ def sincronizar(cliente: ClienteNotion, database_id: str, entradas: list[Entrada
                 f"se esperaba: {' o '.join(sorted(tipos))}."
             )
 
-    existentes = cliente.titulos_existentes(ds_id, cfg.prop_palabra)
+    existentes = cliente.titulos_existentes(ds_id, prop_palabra)
     creadas = omitidas = 0
     for e in entradas:
         if e.notion_page_id or e.palabra.lower() in existentes:
@@ -142,18 +145,49 @@ def sincronizar(cliente: ClienteNotion, database_id: str, entradas: list[Entrada
             omitidas += 1
             continue
 
-        props = {cfg.prop_palabra: _valor("title", e.palabra)}
+        props = {prop_palabra: _valor("title", e.palabra)}
         if e.definicion:
-            props[cfg.prop_definicion] = _valor("rich_text", e.definicion)
-        if cfg.prop_idioma:
-            props[cfg.prop_idioma] = _valor(esquema[cfg.prop_idioma], nombre_idioma(e.idioma))
-        if cfg.prop_libro and e.libro:
-            props[cfg.prop_libro] = _valor(esquema[cfg.prop_libro], e.libro)
-        if cfg.prop_fecha and e.fecha:
-            props[cfg.prop_fecha] = _valor("date", e.fecha)
+            props[base.prop_definicion] = _valor("rich_text", e.definicion)
+        if base.prop_idioma:
+            props[base.prop_idioma] = _valor(esquema[base.prop_idioma], nombre_idioma(e.idioma))
+        if base.prop_libro and e.libro:
+            props[base.prop_libro] = _valor(esquema[base.prop_libro], e.libro)
+        if base.prop_fecha and e.fecha:
+            props[base.prop_fecha] = _valor("date", e.fecha)
 
         e.notion_page_id = cliente.crear_pagina(ds_id, props)
         existentes.add(e.palabra.lower())
         creadas += 1
         log.info("  + %s", e.palabra)
+    return creadas, omitidas
+
+
+def sincronizar(cliente: ClienteNotion, entradas: list[Entrada], cfg,
+                incluir_sin_definicion: bool = False) -> tuple[int, int]:
+    """Reparte las entradas por idioma y sube cada grupo a su base de datos.
+
+    Devuelve (creadas, omitidas) en total.
+    """
+    grupos: dict[str, list[Entrada]] = {}
+    sin_base: dict[str, int] = {}
+    for e in entradas:
+        base = cfg.base_para(e.idioma)
+        if base is None:
+            sin_base[e.idioma] = sin_base.get(e.idioma, 0) + 1
+            continue
+        grupos.setdefault(base.database_id, []).append(e)
+
+    for idioma, n in sorted(sin_base.items()):
+        log.warning("⚠️  %d palabras en %s no se suben: no hay base de datos para ese idioma "
+                    "(añade NOTION_DATABASE_ID_%s o NOTION_DATABASE_ID).",
+                    n, nombre_idioma(idioma), idioma.upper())
+
+    bases = {b.database_id: b for b in cfg.notion_bases.values()}
+    creadas, omitidas = 0, sum(sin_base.values())
+    for database_id, grupo in grupos.items():
+        idiomas = ", ".join(sorted({nombre_idioma(e.idioma) for e in grupo}))
+        log.info("📘 Base de datos de %s:", idiomas)
+        c, o = _sincronizar_base(cliente, bases[database_id], grupo, incluir_sin_definicion)
+        creadas += c
+        omitidas += o
     return creadas, omitidas

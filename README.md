@@ -65,19 +65,37 @@ para subir también las palabras sin definición, `limpiar-kobo --si` para no pe
 ## Configurar Notion
 
 1. Crea una integración en <https://www.notion.so/my-integrations> y copia el token en `NOTION_TOKEN`.
-2. Crea una base de datos con estas columnas (los nombres se pueden cambiar en `.env`):
+2. Crea una base de datos por idioma (o una sola para todo) con estas columnas:
 
    | Columna | Tipo | ¿Obligatoria? |
    |---|---|---|
-   | Palabra | Título | Sí |
+   | (la de título, con el nombre que quieras) | Título | Sí. Se detecta sola |
    | Definición | Texto | Sí |
-   | Idioma | Selección (o texto) | No |
    | Libro | Texto (o selección) | No |
    | Fecha | Fecha | No |
+   | Idioma | Selección (o texto) | No. Útil solo si usas una única base |
 
    Si no quieres alguna opcional, deja su variable vacía en `.env`.
-3. En la base de datos: **⋯ → Conexiones → añade tu integración**. Sin este paso la API devuelve 404.
-4. Copia el ID de la base de datos (los 32 caracteres de la URL, antes de `?v=`) en `NOTION_DATABASE_ID`.
+3. En **cada** base de datos: **⋯ → Conexiones → añade tu integración**. Sin este paso la API devuelve 404.
+4. Copia el ID de cada base (los 32 caracteres de la URL, antes de `?v=`) en el `.env`:
+
+   ```ini
+   NOTION_DATABASE_ID_ES=...   # palabras en español
+   NOTION_DATABASE_ID_EN=...   # palabras en inglés
+   NOTION_DATABASE_ID=...      # opcional: resto de idiomas, o todo si solo tienes una base
+   ```
+
+   Cada palabra va a la base de su idioma. Si un idioma no tiene base, sus palabras no se suben
+   y el script te avisa.
+
+5. Si las columnas se llaman distinto en cada base (por ejemplo, la inglesa en inglés),
+   añade el código del idioma a la variable. Usa `-` si esa base no tiene la columna:
+
+   ```ini
+   NOTION_PROP_DEFINICION=Definición
+   NOTION_PROP_DEFINICION_EN=Definition
+   NOTION_PROP_FECHA_EN=-
+   ```
 
 El script usa la versión `2025-09-03` de la API de Notion (bases de datos con *data sources*).
 Antes de subir nada comprueba que las columnas existen y tienen el tipo correcto.

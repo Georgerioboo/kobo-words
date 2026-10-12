@@ -79,8 +79,11 @@ def cmd_exportar(cfg: Config, args) -> None:
 def cmd_notion(cfg: Config, args) -> None:
     from .notion import ClienteNotion, ErrorNotion, sincronizar
 
-    if not (cfg.notion_token and cfg.notion_database_id):
-        sys.exit("❌ Falta NOTION_TOKEN o NOTION_DATABASE_ID en el .env")
+    if not cfg.notion_token:
+        sys.exit("❌ Falta NOTION_TOKEN en el .env")
+    if not cfg.notion_bases:
+        sys.exit("❌ Falta el ID de la base de datos de Notion en el .env "
+                 "(NOTION_DATABASE_ID_ES, NOTION_DATABASE_ID_EN o NOTION_DATABASE_ID)")
     vocab = _vocab(cfg)
     if not vocab.entradas:
         sys.exit("❌ No hay palabras exportadas. Ejecuta primero: python -m kobo_words exportar")
@@ -88,8 +91,7 @@ def cmd_notion(cfg: Config, args) -> None:
     log.info("🔄 Sincronizando con Notion...")
     try:
         creadas, omitidas = sincronizar(
-            ClienteNotion(cfg.notion_token), cfg.notion_database_id,
-            list(vocab.entradas.values()), cfg, args.incluir_sin_definicion,
+            ClienteNotion(cfg.notion_token), list(vocab.entradas.values()), cfg, args.incluir_sin_definicion,
         )
     except ErrorNotion as e:
         sys.exit(f"❌ Notion: {e}")
