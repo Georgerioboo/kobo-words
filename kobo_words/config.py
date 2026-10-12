@@ -1,18 +1,58 @@
 """Configuración: se lee de variables de entorno o de un fichero .env."""
 
 import glob
+import logging
 import os
 import platform
+import re
 import string
 from dataclasses import dataclass
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
+RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
+
+
+def ruta_env() -> Path | None:
+    """El .env se busca en la carpeta desde la que ejecutas y en la del proyecto."""
+    for carpeta in (Path.cwd(), RAIZ_PROYECTO):
+        if (carpeta / ".env").is_file():
+            return carpeta / ".env"
+    return None
+
+
+def aviso_env() -> str | None:
+    """Explica por qué no se ha encontrado el .env, si es un error típico."""
+    if ruta_env():
+        return None
+    for carpeta in (Path.cwd(), RAIZ_PROYECTO):
+        if (carpeta / ".env.txt").is_file():
+            return (f"Hay un '.env.txt' en {carpeta} pero el script lee '.env'. "
+                    "Renómbralo con: mv .env.txt .env")
+    return f"No hay ningún fichero .env en {Path.cwd()} ni en {RAIZ_PROYECTO}."
+
+
 try:
     from dotenv import load_dotenv
 
-    load_dotenv()
+    if _env := ruta_env():
+        load_dotenv(_env, encoding="utf-8-sig")  # utf-8-sig: tolera el BOM del Bloc de notas
 except ImportError:  # python-dotenv es opcional
     pass
+
+_HEX32 = re.compile(r"[0-9a-f]{32}")
+
+
+def normalizar_id(valor: str) -> str:
+    """Acepta el ID tal cual, con guiones, o la URL completa de Notion.
+
+    https://www.notion.so/usuario/Mis-palabras-0123...cdef?v=9876...  →  0123...cdef
+    """
+    valor = valor.strip().strip('"\'').split("?")[0].split("#")[0].lower().replace("-", "")
+    encontrados = _HEX32.findall(valor)
+    return encontrados[-1] if encontrados else valor
+
 
 RUTA_RELATIVA_DB = os.path.join(".kobo", "KoboReader.sqlite")
 
@@ -88,9 +128,9 @@ def bases_notion_desde_entorno() -> dict[str, BaseNotion]:
     for nombre, valor in os.environ.items():
         if nombre.startswith(prefijo) and valor.strip():
             idioma = nombre[len(prefijo):].lower()
-            bases[idioma] = _base_desde_entorno(valor.strip(), idioma)
+            bases[idioma] = _base_desde_entorno(normalizar_id(valor), idioma)
     if general := _opcional("NOTION_DATABASE_ID"):
-        bases["*"] = _base_desde_entorno(general, None)
+        bases["*"] = _base_desde_entorno(normalizar_id(general), None)
     return bases
 
 

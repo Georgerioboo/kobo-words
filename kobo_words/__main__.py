@@ -10,7 +10,7 @@ import argparse
 import logging
 import sys
 
-from .config import Config
+from .config import Config, aviso_env, ruta_env
 from .diccionario import Diccionario
 from .exportar import Entrada, Vocabulario, escribir_txt, nombre_idioma
 from .kobo import borrar_palabras, leer_palabras
@@ -79,6 +79,8 @@ def cmd_exportar(cfg: Config, args) -> None:
 def cmd_notion(cfg: Config, args) -> None:
     from .notion import ClienteNotion, ErrorNotion, sincronizar
 
+    if aviso := aviso_env():
+        sys.exit(f"❌ {aviso}")
     if not cfg.notion_token:
         sys.exit("❌ Falta NOTION_TOKEN en el .env")
     if not cfg.notion_bases:
@@ -99,6 +101,68 @@ def cmd_notion(cfg: Config, args) -> None:
         vocab.guardar()  # guarda los page_id de lo que sí se haya creado
     log.info("✅ %d palabras nuevas en Notion (%d ya estaban o sin definición).",
              creadas, omitidas)
+
+
+def cmd_comprobar(cfg: Config, args) -> None:
+    """Revisa la configuración paso a paso sin modificar nada."""
+    from .exportar import nombre_idioma
+    from .notion import ClienteNotion, ErrorNotion
+
+    ok = True
+    log.info("1) Fichero .env")
+    if env := ruta_env():
+        log.info("   ✅ %s", env)
+    else:
+        log.info("   ❌ %s", aviso_env())
+        ok = False
+
+    log.info("2) Kobo")
+    log.info("   %s %s", "✅" if cfg.db_path else "❌",
+             cfg.db_path or "no encontrado (¿está conectado y montado como unidad?)")
+
+    log.info("3) Token de Notion")
+    if cfg.notion_token:
+        t = cfg.notion_token
+        log.info("   ✅ %s…%s (%d caracteres)", t[:4], t[-4:], len(t))
+    else:
+        log.info("   ❌ falta NOTION_TOKEN")
+        ok = False
+
+    log.info("4) Bases de datos de Notion")
+    if not cfg.notion_bases:
+        log.info("   ❌ no hay ninguna: añade NOTION_DATABASE_ID_ES / NOTION_DATABASE_ID_EN")
+        ok = False
+    cliente = ClienteNotion(cfg.notion_token) if cfg.notion_token else None
+    for idioma, base in sorted(cfg.notion_bases.items()):
+        nombre = "resto de idiomas" if idioma == "*" else nombre_idioma(idioma)
+        log.info("   • %s → %s", nombre, base.database_id)
+        if len(base.database_id) != 32:
+            log.info("     ❌ no parece un ID de Notion (deben ser 32 caracteres 0-9 y a-f)")
+            ok = False
+            continue
+        if not cliente:
+            continue
+        try:
+            ds = cliente.data_source_de(base.database_id)
+            esquema = cliente.esquema(ds)
+        except ErrorNotion as e:
+            log.info("     ❌ %s", str(e).replace("\n", "\n     "))
+            ok = False
+            continue
+        titulo = next((n for n, t in esquema.items() if t == "title"), None)
+        log.info("     ✅ '%s' encontrada. Columnas: %s", cliente.titulo(ds),
+                 ", ".join(f"{n} ({t})" for n, t in esquema.items()))
+        palabra = base.prop_palabra or titulo
+        log.info("     %s La palabra irá a '%s'", "✅" if palabra in esquema else "❌", palabra)
+        if esquema.get(base.prop_definicion) == "rich_text":
+            log.info("     ✅ La definición irá a '%s'", base.prop_definicion)
+        else:
+            log.info("     ❌ La definición debería ir a '%s', pero %s", base.prop_definicion,
+                     "esa columna no existe" if base.prop_definicion not in esquema
+                     else f"es de tipo {esquema[base.prop_definicion]}, no Texto")
+            ok = False
+
+    log.info("\n%s", "✅ Todo listo." if ok else "❌ Corrige lo marcado y vuelve a ejecutar 'comprobar'.")
 
 
 def cmd_todo(cfg: Config, args) -> None:
@@ -140,6 +204,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("notion", help="sube a Notion las palabras que aún no estén")
     p.add_argument("--incluir-sin-definicion", action="store_true",
                    help="sube también las palabras sin definición")
+    sub.add_parser("comprobar", help="revisa el .env, el Kobo y las bases de Notion")
     p = sub.add_parser("limpiar-kobo", help="borra del Kobo las palabras ya exportadas")
     p.add_argument("--si", action="store_true", help="no pedir confirmación")
 
@@ -150,7 +215,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = Config.desde_entorno()
     {"exportar": cmd_exportar, "notion": cmd_notion, "todo": cmd_todo,
-     "limpiar-kobo": cmd_limpiar_kobo}[args.comando](cfg, args)
+     "limpiar-kobo": cmd_limpiar_kobo, "comprobar": cmd_comprobar}[args.comando](cfg, args)
 
 
 if __name__ == "__main__":

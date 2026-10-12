@@ -15,7 +15,16 @@ LIMITE_TEXTO = 2000  # máximo de caracteres por bloque rich_text
 
 
 class ErrorNotion(RuntimeError):
-    pass
+    def __init__(self, mensaje: str, status: int | None = None):
+        super().__init__(mensaje)
+        self.status = status
+
+
+AYUDA_ID = """Posibles causas:
+  1. La integración no está conectada a esa base: en Notion abre la base → ⋯ → Conexiones → añade tu integración.
+  2. Has copiado el ID de una página y no el de la base. Si la base está dentro de una página,
+     ábrela a pantalla completa (↗) y copia el enlace de ahí.
+  3. Has copiado el ID de la vista (lo que va después de ?v=) en lugar del de la base."""
 
 
 class ClienteNotion:
@@ -30,7 +39,11 @@ class ClienteNotion:
 
     def _peticion(self, metodo: str, ruta: str, **kwargs) -> dict:
         for intento in range(5):
-            r = self.s.request(metodo, f"{API}{ruta}", timeout=30, **kwargs)
+            try:
+                r = self.s.request(metodo, f"{API}{ruta}", timeout=30, **kwargs)
+            except requests.RequestException as e:
+                raise ErrorNotion(f"No se puede conectar con Notion ({type(e).__name__}). "
+                                  "¿Tienes conexión a internet?") from e
             time.sleep(self.pausa)
             if r.status_code == 429 or r.status_code >= 500:
                 espera = float(r.headers.get("Retry-After", 2 ** intento))
@@ -42,13 +55,24 @@ class ClienteNotion:
                     msg = r.json().get("message", r.text)
                 except ValueError:
                     msg = r.text
-                raise ErrorNotion(f"{r.status_code}: {msg}")
+                raise ErrorNotion(f"{r.status_code}: {msg}", r.status_code)
             return r.json()
         raise ErrorNotion("Notion no responde tras varios reintentos.")
 
     def data_source_de(self, database_id: str) -> str:
         """Una base de datos de Notion contiene uno o varios 'data sources'; usamos el primero."""
-        db = self._peticion("GET", f"/databases/{database_id}")
+        try:
+            db = self._peticion("GET", f"/databases/{database_id}")
+        except ErrorNotion as e:
+            if e.status not in (400, 404):
+                raise
+            # Quizá lo que se pegó es directamente el ID de un data source
+            try:
+                return self._peticion("GET", f"/data_sources/{database_id}")["id"]
+            except ErrorNotion:
+                raise ErrorNotion(
+                    f"Notion no encuentra la base de datos {database_id}.\n{AYUDA_ID}"
+                ) from e
         fuentes = db.get("data_sources") or []
         if not fuentes:
             raise ErrorNotion("La base de datos no tiene data sources. ¿Es el ID correcto?")
@@ -61,6 +85,10 @@ class ClienteNotion:
         """Devuelve {nombre_propiedad: tipo}."""
         ds = self._peticion("GET", f"/data_sources/{data_source_id}")
         return {nombre: p["type"] for nombre, p in ds["properties"].items()}
+
+    def titulo(self, data_source_id: str) -> str:
+        ds = self._peticion("GET", f"/data_sources/{data_source_id}")
+        return "".join(t.get("plain_text", "") for t in ds.get("title", [])) or "(sin título)"
 
     def titulos_existentes(self, data_source_id: str, prop_titulo: str) -> set[str]:
         """Todas las palabras que ya están en Notion (para no duplicarlas)."""

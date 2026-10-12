@@ -150,3 +150,15 @@ def test_notion_una_base_por_idioma(tmp_path, monkeypatch):
     ds, props = c.creadas[1]
     assert ds == "ds_es" and props["Libro"] == {"select": {"name": "Niebla"}}
     assert props["Fecha"] == {"date": {"start": "2026-10-03"}}
+
+
+def test_normalizar_id():
+    from kobo_words.config import normalizar_id
+
+    db = "0123456789abcdef0123456789abcdef"
+    vista = "fedcba9876543210fedcba9876543210"
+    assert normalizar_id(db) == db
+    assert normalizar_id(f" '{db.upper()}' ") == db
+    assert normalizar_id("01234567-89ab-cdef-0123-456789abcdef") == db
+    assert normalizar_id(f"https://www.notion.so/jorge/Mis-palabras-{db}?v={vista}&pvs=4") == db
+    assert normalizar_id(f"https://www.notion.so/{db}?v={vista}") == db
